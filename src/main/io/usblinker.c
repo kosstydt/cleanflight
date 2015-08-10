@@ -35,107 +35,124 @@
 #include "drivers/light_led.h"
 #include "drivers/serial.h"
 #include "io/serial.h"
+#include "io/usblinker.h"
+
+const escHardware_t escHardware[6] = {
+// Figure out esc clocks and pins, extrapolated from timer.c
+// Periphs could be pulled progmatically... but I'll leave that for another exercise
+  { GPIOA, GPIO_Pin_8 },
+  { GPIOA, GPIO_Pin_11 },
+  { GPIOB, GPIO_Pin_6 },
+  { GPIOB, GPIO_Pin_7 },
+  { GPIOB, GPIO_Pin_8 },
+  { GPIOB, GPIO_Pin_9 }
+};
+
+extern void serialInit(serialConfig_t *); // from main.c // FIXME remove this dependency
 
 #define BIT_DELAY_HALF 34
 #define BIT_DELAY 68
 
 volatile uint8_t serialBuffer[255];
 
-void gpio_config_out(void)
+
+void gpio_config_out(uint16_t escIndex)
 {
-    gpio_config_t cfg;
+    gpio_config_t gpcfg;
 
-    cfg.mode = Mode_Out_PP;
-    cfg.pin = GPIO_Pin_8;
-    cfg.speed = Speed_2MHz;
+    gpcfg.mode = Mode_Out_PP;
+    gpcfg.pin = escHardware[escIndex].pinpos;
+    gpcfg.speed = Speed_2MHz;
 
-    gpioInit(GPIOA, &cfg);
+    gpioInit(escHardware[escIndex].gpio, &gpcfg);
 }
 
-void gpio_config_in(void)
+void gpio_config_in(uint16_t escIndex)
 {
-    gpio_config_t cfg;
+    gpio_config_t gpcfg;
 
-    cfg.mode = Mode_IPU;
-    cfg.pin = GPIO_Pin_8;
-    cfg.speed = Speed_2MHz;
+    gpcfg.mode = Mode_IPU;
+    gpcfg.pin = escHardware[escIndex].pinpos;
+    gpcfg.speed = Speed_2MHz;
 
-    gpioInit(GPIOA, &cfg);
+    gpioInit(escHardware[escIndex].gpio, &gpcfg);
 }
 
-void sendDigital1()
+void sendDigital1(uint16_t escIndex)
 {
-    digitalHi(GPIOA, GPIO_Pin_8);
+    digitalHi(escHardware[escIndex].gpio, escHardware[escIndex].pinpos);
     delayMicroseconds(BIT_DELAY);
-    digitalLo(GPIOA, GPIO_Pin_8);
+    digitalLo(escHardware[escIndex].gpio, escHardware[escIndex].pinpos);
     delayMicroseconds(BIT_DELAY);
 }
 
-void sendDigital0()
+void sendDigital0(uint16_t escIndex)
 {
-    digitalHi(GPIOA, GPIO_Pin_8);
+    digitalHi(escHardware[escIndex].gpio, escHardware[escIndex].pinpos);
     delayMicroseconds(BIT_DELAY_HALF);
-    digitalLo(GPIOA, GPIO_Pin_8);
+    digitalLo(escHardware[escIndex].gpio, escHardware[escIndex].pinpos);
     delayMicroseconds(BIT_DELAY_HALF);
-    digitalHi(GPIOA, GPIO_Pin_8);
+    digitalHi(escHardware[escIndex].gpio, escHardware[escIndex].pinpos);
     delayMicroseconds(BIT_DELAY_HALF);
-    digitalLo(GPIOA, GPIO_Pin_8);
+    digitalLo(escHardware[escIndex].gpio, escHardware[escIndex].pinpos);
     delayMicroseconds(BIT_DELAY_HALF);
 }
 
-void sendByte(uint8_t byte)
+void sendByte(uint8_t byte,uint16_t escIndex)
 {
     for(uint8_t i = 0; i < 8; i++)
     {
         if(byte & (1 << i))
         {
-            sendDigital1();
+            sendDigital1(escIndex);
         } else {
-            sendDigital0();
+            sendDigital0(escIndex);
         }
     }
 }
 
-void sendBuf(uint8_t txlen)
+void sendBuf(uint8_t txlen,uint16_t escIndex)
 {
-    gpio_config_out();
+    gpio_config_out(escIndex);
 
     // send intro message
     for(uint8_t i = 0; i < 23; i++)
     {
-        sendDigital1();
+        sendDigital1(escIndex);
     }
-    sendDigital0();
+    sendDigital0(escIndex);
 
     for(uint8_t i = 0; i < txlen; i++)
     {
-        sendByte(serialBuffer[i]);
+        sendByte(serialBuffer[i],escIndex);
     }
 
     // send trailing message
-    digitalHi(GPIOA, GPIO_Pin_8);
+    digitalHi(escHardware[escIndex].gpio, escHardware[escIndex].pinpos);
     delayMicroseconds(BIT_DELAY_HALF);
 
-    gpio_config_in();
+    gpio_config_in(escIndex);
 }
 
-int8_t readBit(uint32_t bitPeriod)
+
+
+int8_t readBit(uint32_t bitPeriod,uint16_t escIndex)
 {
     uint32_t startTime = micros();
-    while(digitalIn(GPIOA, GPIO_Pin_8)) // wait to go low
+    while(digitalIn(escHardware[escIndex].gpio, escHardware[escIndex].pinpos)) // wait to go low
         if (micros() > startTime + 250)
             return -1;
-    while(!digitalIn(GPIOA, GPIO_Pin_8)) // wait to go high
+    while(!digitalIn(escHardware[escIndex].gpio, escHardware[escIndex].pinpos)) // wait to go high
         if (micros() > startTime + 250)
             return -1;
     uint32_t endTime = micros();
 
     if((endTime - startTime) < (bitPeriod / 1.5)) // short pulses
     {
-        while(digitalIn(GPIOA, GPIO_Pin_8)) // wait for second half of bit
+        while(digitalIn(escHardware[escIndex].gpio, escHardware[escIndex].pinpos)) // wait for second half of bit
             if (micros() > startTime + 250)
                 return -1;
-        while(!digitalIn(GPIOA, GPIO_Pin_8))
+        while(!digitalIn(escHardware[escIndex].gpio, escHardware[escIndex].pinpos))
             if (micros() > startTime + 250)
                 return -1;
         return 0;
@@ -143,20 +160,21 @@ int8_t readBit(uint32_t bitPeriod)
     return 1;
 }
 
-void USBLinker(void)
-{
-    // just use motor pin 1 = PWM9 TIM1_CH1 PA8 for now
 
-    // take control
+
+void USBLinker(uint16_t escIndex)
+{
+
     LED0_OFF;
 #ifdef LED1
     LED1_OFF;
 #endif
-    gpio_config_in();
+    gpio_config_in(escIndex);
+    serialConfig_t *serialConfig = NULL;
 
-    // TODO open serial port
-    // serialInit(9600);
+    serialInit(serialConfig);
     serialPort_t *serialPort = NULL;
+
 
     uint16_t lastPin = 0;
 
@@ -164,28 +182,34 @@ void USBLinker(void)
     {
         if (serialTotalBytesWaiting(serialPort))
         {
+#ifdef LED1
             LED1_ON;
+#endif
             uint16_t rxlen = 0;
-            while(serialTotalBytesWaiting(serialPort))
-            {
-                serialBuffer[rxlen++] = serialRead(serialPort);
-                delay(2);
+            uint32_t lastRX = millis();
 
-                if (rxlen == 255)
+            do {
+                if (serialTotalBytesWaiting(serialPort))
                 {
-                    while(serialTotalBytesWaiting(serialPort))
-                        serialRead(serialPort);
-                    break;
+                    serialBuffer[rxlen++] = serialRead(serialPort);
+                    lastRX = millis();
+
+                    if (rxlen == 255)
+                    {
+                        while(serialTotalBytesWaiting(serialPort))
+                            serialRead(serialPort);
+                        break;
+                    }
                 }
             }
-#ifdef LED1
+            while (millis() < lastRX + 2);
+
             LED1_OFF;
-#endif
-            sendBuf(rxlen);
+            sendBuf(rxlen,escIndex);
             lastPin = 1;
         } else {
             // read from pin
-            uint16_t curPin = digitalIn(GPIOA, GPIO_Pin_8);
+            uint16_t curPin = digitalIn(escHardware[escIndex].gpio, escHardware[escIndex].pinpos);
 
             if ((lastPin == 0) && (curPin != 0)) // pin went high from low
             {
@@ -196,19 +220,19 @@ void USBLinker(void)
                 startTime = micros();
 
                 // get starting time at next low-high transition
-                while(digitalIn(GPIOA, GPIO_Pin_8)) // wait to go low
+                while(digitalIn(escHardware[escIndex].gpio, escHardware[escIndex].pinpos)) // wait to go low
                     if (micros() > startTime + 250)
                                 break;
-                while(!digitalIn(GPIOA, GPIO_Pin_8)) // wait to go high
+                while(!digitalIn(escHardware[escIndex].gpio, escHardware[escIndex].pinpos)) // wait to go high
                     if (micros() > startTime + 250)
                                 break;
                 startTime = micros();
 
                 // get ending time at next low-high transition
-                while(digitalIn(GPIOA, GPIO_Pin_8)) // wait to go low
+                while(digitalIn(escHardware[escIndex].gpio, escHardware[escIndex].pinpos)) // wait to go low
                     if (micros() > startTime + 250)
                                 break;
-                while(!digitalIn(GPIOA, GPIO_Pin_8)) // wait to go high
+                while(!digitalIn(escHardware[escIndex].gpio, escHardware[escIndex].pinpos)) // wait to go high
                     if (micros() > startTime + 250)
                                 break;
                 endTime = micros();
@@ -216,7 +240,7 @@ void USBLinker(void)
                 bitPeriod = endTime - startTime; // doesn't include overflow case
 
                 uint8_t introCount = 0;
-                while(readBit(bitPeriod) == 1) // exit on last intro bit, which is 0
+                while(readBit(bitPeriod,escIndex) == 1) // exit on last intro bit, which is 0
                 {
                     introCount++;
                 }
@@ -231,7 +255,7 @@ void USBLinker(void)
                         {
                             if (i == 0)
                                 serialBuffer[rxlen] = 0; // reset byte for bitwise operations
-                            tmp = readBit(bitPeriod);
+                            tmp = readBit(bitPeriod,escIndex);
                             if (tmp == -1) // timeout reached
                             {
                                 timeout = 1;
@@ -244,7 +268,7 @@ void USBLinker(void)
                         }
                     }
 
-                    for (uint8_t i; i < rxlen; i++)
+                    for (uint8_t i = 0; i < rxlen; i++)
                     {
                         serialWrite(serialPort, serialBuffer[i]);
                     }
@@ -255,3 +279,5 @@ void USBLinker(void)
         }
     }
 }
+
+

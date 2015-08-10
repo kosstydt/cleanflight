@@ -46,6 +46,7 @@
 #include "drivers/pwm_rx.h"
 
 
+#include "io/usblinker.h"
 #include "io/escservo.h"
 #include "io/gps.h"
 #include "io/gimbal.h"
@@ -1654,14 +1655,26 @@ static void cliStatus(char *cmdline)
 
 
 #ifdef USE_USBLINKER
-
-void USBLinker(void);
-
 static void cliUSBLinker(char *cmdline)
 {
-    (void)cmdline;
+    int i;
 
-    USBLinker();
+    if (isEmpty(cmdline)) {
+        cliPrint("Please specify a ouput channel. e.g. `usblinker 2` to connect to motor 2\r\n");
+        return;
+    } else {
+        i = atoi(cmdline);
+        if (i >= 0 && i <= ESC_COUNT) {
+            printf("Switching to SimonK mode on motor port %d\r\n", i);
+        }
+        else {
+            printf("Invalid motor port, valid range: 1 to %d\r\n", ESC_COUNT);
+        }
+    }
+    UNUSED(cmdline);
+    StopPwmAllMotors();
+    // motor 1 => index 0
+    USBLinker(i-1);
 }
 #endif
 
